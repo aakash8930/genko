@@ -1,0 +1,53 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { JSDOM } from 'jsdom';
+import { LEGACY_LESSON_IDS, readProgress, validIds } from '../progress.js';
+
+test('legacy guest completions remain checked when new lessons load and next lesson can be completed', async () => {
+  const dom = new JSDOM('<button data-start>Start</button><span id="course-progress-text"></span><span id="course-progress-percent"></span><div id="course-progress-bar"></div><button id="account-button"></button><dialog id="lesson"><button class="close"></button><div id="lesson-body"></div></dialog>', { url: 'https://example.test/', runScripts: 'outside-only' });
+  const w = dom.window;
+  w.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  w.HTMLDialogElement.prototype.close = function () { this.open = false; };
+  w.localStorage.setItem('sora-japanese-progress-v1', '[0,1,2]');
+  const ids = [...LEGACY_LESSON_IDS, '7aa2de65-1fdc-4e34-90d2-a86cbd3266e6', '83d2d709-ed9f-409b-bc7d-d9965f542c32'];
+  w.loadPublishedLessons = async () => ids.map((id, i) => ({ id, title: `Lesson ${i + 1}`, subtitle: 'Practice', character: 'あ', sound: 'a', description: 'Learn', question: 'Which?', answers: ['yes', 'no', 'maybe', 'later'], correct: 0 }));
+  w.LEGACY_LESSON_IDS = LEGACY_LESSON_IDS; w.readProgress = readProgress; w.validIds = validIds;
+  let source = await readFile(new URL('../app.js', import.meta.url), 'utf8');
+  source = source.replace(/^import .*;\n/gm, '');
+  w.eval(source);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(w.document.querySelector('#course-progress-text').textContent, '3 of 5 lessons complete');
+  w.document.querySelector('[data-start]').click();
+  assert.equal(w.document.querySelectorAll('.path-number.done').length, 3);
+  w.document.querySelector('[data-lesson="3"]').click();
+  w.document.querySelector('[data-action="quiz"]').click();
+  w.document.querySelector('[data-answer="0"]').click();
+  assert.equal(w.document.querySelector('#course-progress-text').textContent, '4 of 5 lessons complete');
+  assert.ok(JSON.parse(w.localStorage.getItem('sora-japanese-progress-v2')).includes(ids[3]));
+  assert.ok(w.document.querySelector('[data-action="next"]'));
+  dom.window.close();
+});
+
+test('review includes completed lessons, counts first attempts, and leaves progress unchanged', async () => {
+  const dom = new JSDOM('<button data-start>Start</button><span id="course-progress-text"></span><span id="course-progress-percent"></span><div id="course-progress-bar"></div><button id="account-button"></button><dialog id="lesson"><button class="close"></button><div id="lesson-body"></div></dialog>', { url: 'https://example.test/', runScripts: 'outside-only' });
+  const w = dom.window;
+  w.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  w.localStorage.setItem('sora-japanese-progress-v1', '[0,1]');
+  w.loadPublishedLessons = async () => { throw new Error('offline'); };
+  w.LEGACY_LESSON_IDS = LEGACY_LESSON_IDS; w.readProgress = readProgress; w.validIds = validIds;
+  w.eval((await readFile(new URL('../app.js', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, ''));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  w.document.querySelector('[data-start]').click();
+  w.document.querySelector('[data-action="start-review"]').click();
+  assert.match(w.document.querySelector('.eyebrow').textContent, /1 OF 2/);
+  w.document.querySelector('[data-review-answer="1"]').click();
+  w.document.querySelector('[data-action="review-next"]').click();
+  w.document.querySelector('[data-review-answer="0"]').click();
+  assert.match(w.document.querySelector('.feedback').textContent, /try once more/);
+  w.document.querySelector('[data-review-answer="2"]').click();
+  w.document.querySelector('[data-action="review-next"]').click();
+  assert.match(w.document.querySelector('#lesson-body').textContent, /1 of 2/);
+  assert.deepEqual(JSON.parse(w.localStorage.getItem('sora-japanese-progress-v2')), LEGACY_LESSON_IDS.slice(0, 2));
+  dom.window.close();
+});
